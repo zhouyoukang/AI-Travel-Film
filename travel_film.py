@@ -30,7 +30,71 @@ from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
+
+# ============================================================
+# Preflight checks
+# ============================================================
+def check_ffmpeg():
+    """Verify ffmpeg and ffprobe are available."""
+    for tool in ["ffmpeg", "ffprobe"]:
+        try:
+            r = subprocess.run([tool, "-version"], capture_output=True, timeout=5)
+            if r.returncode == 0: continue
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        print(f"\n  [ERROR] '{tool}' not found in PATH.")
+        print(f"\n  Install ffmpeg:")
+        print(f"    Windows:  winget install ffmpeg")
+        print(f"    macOS:    brew install ffmpeg")
+        print(f"    Linux:    sudo apt install ffmpeg")
+        print(f"    Or download from https://ffmpeg.org/download.html")
+        sys.exit(1)
+
+def auto_detect_sources():
+    """Scan common video directories to find footage automatically."""
+    home = Path.home()
+    candidates = [
+        home / "Videos", home / "Movies",
+        home / "Desktop", home / "Downloads",
+        home / "DCIM", home / "Pictures",
+        Path("D:/") / "Videos", Path("E:/") / "Videos",
+        Path("D:/") / "DCIM", Path("E:/") / "DCIM",
+    ]
+    found = []
+    for d in candidates:
+        if not d.exists(): continue
+        # Count video files (recursive 1 level)
+        vids = list(d.glob("*.mp4")) + list(d.glob("*.MP4"))
+        for sub in d.iterdir():
+            if sub.is_dir():
+                vids += list(sub.glob("*.mp4")) + list(sub.glob("*.MP4"))
+        if len(vids) >= 3:
+            found.append((str(d), len(vids)))
+    return found
+
+def interactive_setup():
+    """Guide first-time users to create a config."""
+    print("\n  No source directories configured.")
+    print("  Let me scan your computer for video footage...\n")
+    detected = auto_detect_sources()
+    if not detected:
+        print("  No video directories found. Please create a config file manually.")
+        print("  See example_config.json for the format.")
+        return None
+
+    print(f"  Found {len(detected)} directories with video files:\n")
+    for i, (path, count) in enumerate(detected):
+        print(f"    [{i+1}] {path}  ({count} videos)")
+
+    print(f"\n  To get started, create a config file:")
+    print(f"    1. Copy example_config.json to my_trip.json")
+    print(f"    2. Set source_dirs to your video folders:")
+    print(f'       [["{detected[0][0]}", "camera", "My Camera"]]')
+    print(f"    3. Run: python travel_film.py --config my_trip.json")
+    print(f"\n  Or use --auto to scan the first detected directory:")
+    print(f"    python travel_film.py --auto")
+    return detected
 
 # ============================================================
 # Default Configuration (override via --config JSON file)
@@ -624,7 +688,13 @@ def main():
                         help="build (default) or analyze sources only")
     parser.add_argument("--config", type=str, default="", help="Path to config JSON file")
     parser.add_argument("--vertical", action="store_true", help="Output 9:16 vertical video")
+    parser.add_argument("--auto", action="store_true", help="Auto-detect video sources")
+    parser.add_argument("--lang", type=str, default="en", choices=["en", "zh"],
+                        help="Language for narration/subtitles (en or zh)")
     args = parser.parse_args()
+
+    # Preflight
+    check_ffmpeg()
 
     # Load config
     cfg = dict(DEFAULT_CONFIG)
@@ -633,11 +703,39 @@ def main():
             user_cfg = json.load(f)
         cfg.update(user_cfg)
 
+    # Apply language
+    if args.lang == "zh":
+        cfg["tts_voice"] = "zh-CN-YunxiNeural"
+        zh_narrative = [
+            {**cfg["narrative"][0]},
+            {**cfg["narrative"][1],
+             "narration": "\u6709\u4e9b\u5730\u65b9\uff0c\u7167\u7247\u88c5\u4e0d\u4e0b\uff0c\u89c6\u9891\u4e5f\u7559\u4e0d\u4f4f\u3002\u4f60\u53ea\u80fd\u4eb2\u81ea\u53bb\u4e00\u8d9f\u3002",
+             "subtitle": "\u6709\u4e9b\u5730\u65b9\uff0c\u7167\u7247\u88c5\u4e0d\u4e0b\uff0c\n\u89c6\u9891\u4e5f\u7559\u4e0d\u4f4f\u3002\n\u4f60\u53ea\u80fd\u4eb2\u81ea\u53bb\u4e00\u8d9f\u3002"},
+            {**cfg["narrative"][2],
+             "narration": "\u4e0d\u8d76\u8def\u7684\u65f6\u5019\u624d\u53d1\u73b0\uff0c\u8def\u4e0a\u7684\u98ce\u5176\u5b9e\u4e00\u76f4\u5728\u8bf4\u8bdd\u3002",
+             "subtitle": "\u4e0d\u8d76\u8def\u7684\u65f6\u5019\u624d\u53d1\u73b0\uff0c\n\u8def\u4e0a\u7684\u98ce\u5176\u5b9e\u4e00\u76f4\u5728\u8bf4\u8bdd\u3002"},
+            {**cfg["narrative"][3],
+             "narration": "\u6240\u6709\u7684\u8d76\u8def\uff0c\u6240\u6709\u7684\u7b49\u5f85\uff0c\u90fd\u662f\u4e3a\u4e86\u2014\u2014\u8fd9\u4e00\u523b\u3002",
+             "subtitle": "\u6240\u6709\u7684\u8d76\u8def\uff0c\u6240\u6709\u7684\u7b49\u5f85\uff0c\n\u90fd\u662f\u4e3a\u4e86\u2014\u2014\u8fd9\u4e00\u523b\u3002"},
+            {**cfg["narrative"][4],
+             "narration": "\u56de\u6765\u4ee5\u540e\u624d\u53d1\u73b0\uff0c\u53d8\u7684\u4e0d\u662f\u98ce\u666f\u3002\u662f\u770b\u98ce\u666f\u7684\u4eba\u3002",
+             "subtitle": "\u56de\u6765\u4ee5\u540e\u624d\u53d1\u73b0\uff0c\n\u53d8\u7684\u4e0d\u662f\u98ce\u666f\u3002\n\u662f\u770b\u98ce\u666f\u7684\u4eba\u3002"},
+        ]
+        cfg["narrative"] = zh_narrative
+
     if not cfg["source_dirs"]:
-        print("No source directories configured!")
-        print("Create a config file (see example_config.json) and run:")
-        print("  python travel_film.py --config my_trip.json")
-        return
+        if args.auto:
+            detected = auto_detect_sources()
+            if detected:
+                # Use first detected directory as camera source
+                cfg["source_dirs"] = [[detected[0][0], "camera", "Auto-detected"]]
+                print(f"  [AUTO] Using: {detected[0][0]} ({detected[0][1]} videos)")
+            else:
+                print("  [ERR] No video directories found for --auto mode.")
+                return
+        else:
+            interactive_setup()
+            return
 
     spec_key = "vertical" if args.vertical else "horizontal"
     spec = cfg["specs"][spec_key]
